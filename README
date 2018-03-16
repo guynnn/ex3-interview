@@ -1,0 +1,330 @@
+guy.niv, tal.moshe
+Guy Niv (204056204), Tal Moshe (203029707)
+EX: 3
+
+FILES:
+Makefile -- For easy compilation.
+README -- This file.
+Search.h -- A program that search for a certain dir name when given a dir path,
+            using MapReduceFramework.
+MapReduceFramework.cpp -- can Do various tasks with multithreading when it
+                          gets the map() and reduce() functions.
+
+================================================================================
+
+Design
+
+================================================================================
+
+Data structures:
+
+In order to implement the MapReduceFramework, we used the following data
+structures:
+
+- pthreadToContainer: vector of vectors of pairs (key, value). That is, each
+entry in out vector represents a container of other ExecMap thread. We ensure
+that by first apply a map from pthread to int - the entry of the pthread thread
+in pthreadToContainer.
+
+This vector minimizes the shared data between ExecMap threads: Each thread
+emits his (k2, v2) pair to different container so they only need to share a
+global index representing the current index from which they should start taking
+pairs of (k1, v1). This principle is important because it reduces the waiting
+time of ExecMap thread.
+
+- reduceThreadContainers: the same as pthreadToContainer. This is designated for
+ExecReduce threads.
+
+- shuffleVector: vector of pairs. each pair consist of k2 and a container
+(represented by a vector of v2) of all values related to it .
+
+
+Mutexes & semaphore:
+
+- semaphore: shuffle and ExecMap threads represents consumer and producer that
+work in parallel. So we used a semaphore in order to indicates the shuffle the
+number of pairs that was produced by ExecMap threads. Thus, shuffle will only be
+notified when there is a pair in its working container, Otherwise, shuffle
+waiting. This design prevents wasteful busy wait.
+
+- index_mutex: locks the shared index of execMap threads (as mentioned above).
+
+- pthreadToContainer_mutex: locks the pthread_To_Container - provides secure
+init of the container.
+
+- modifyPthreadToContainer_mutex: making sure shuffle and execMap won't be
+working on the same container, thus it is a vector of mutexes, each for every
+execMap thread.
+
+- log_mutex: locks the log file.
+
+
+
+ANSWERS:
+
+================================================================================
+
+Q1
+
+================================================================================
+
+Here is a pseudo code for shuffle (consumer) and emit2 (producer):
+
+
+shuffle()
+{
+
+    while (!conatiner.empty() or ExecMap didn't finish:
+
+        mutex_lock(mutex[pid]);
+        if (!hasElement)
+        {
+            pthread_cond_timedwait(var_cv, mutex[pid]);
+        }
+        // take pair from the container:
+              ...
+        if (container.empty())
+        {
+            hasElement = false;
+        }
+        mutex_unlock(mutex[pid]);
+
+    return;
+}
+
+emit2()
+{
+    mutex_lock(mutex[pid]);
+
+    // add pair to the container
+        ...
+    hasElement = true;
+    pthread_cond_signal(var_cv);
+
+    mutex_unlock(mutex[pid]);
+    return;
+}
+
+
+* we used pthreard_cond_timedwait instead of pthread_cond_wait because it may
+cause the shuffle waiting forever. Assume using the pthread_cond_wait and
+consider the following case: ExecMap threads emitted all pairs to container but
+still didn't finish their function. So Shuffle continues its while loop and
+takes all the remaining pairs from the container (hasElement is still true).
+Then Shuffle enters again the while loop (ExecMap didn't finish yet), this time
+the container is empty hasElement = false. So Shuffle is blocked by the
+cond_wait function. Then OS makes context switches between the ExecMap
+threads - they don't have any pair to emit so they terminate with no calling to
+pthread_cond_signal function (no calling to emit2 anymore). As a result, Shuffle
+is remaining blocked forever and thus ExecReduce wouldn't be created.
+================================================================================
+
+Q2
+================================================================================
+As we saw in the recitation we should have (blocked time) / (service time) + 1
+threads in order to keep a processor fully utilized. multiThreadLevel is the
+number of map or reduce threads. So we should subtract one thread in favor of
+the shuffle thread. That is,
+8 * ((blocked time) / (service time) + 1) - 1 multiThreadLevel in overall.
+================================================================================
+
+Q3
+
+================================================================================
+
+The differences between the 4 implementations are:
+
+
+--------------------------------------------------------------------------------
+a. utilizing multi core
+--------------------------------------------------------------------------------
+- single process:
+
+One process with one thread runs the entire program uses only one core and
+therefore hasn't multi core utilization.
+
+- Posix's library:
+
+The posix library provides the user some control over threads, such as support
+for binding a thread to one or more processors. This makes the posix library
+useful for multi core computer as it exploit the multiple core for program
+concurrency.
+
+- User level threads:
+
+In this implementation Danny uses only one process that splits, in user level,
+to several threads. The OS is only aware of the process - not the user level
+threads. Thus, at a given running time of a such thread, actually the whole
+process residents in a single core, which means there is no multi core
+utilization.
+
+- multi processes:
+
+The OS is aware of the processes and therefore it is possible to parallel the
+execution of these processes among the given cores. So multi processes
+implementation may utilize multi cores.
+
+--------------------------------------------------------------------------------
+b. The ability to create a sophisticated scheduler, based on internal data
+--------------------------------------------------------------------------------
+- single process:
+
+The user hasn't the ability to create scheduler for its data:
+The process competes for using CPU just like other processes running on the
+computer - this is only the OS implementation that controls the scheduling.
+
+
+- Posix's library:
+
+The posix library provides the user several functions which endow him scheduling
+control. For example, the library permits to select the scheduler
+(e.g. FIFO, round-robin scheduler, etc) and to determine the threads priority.
+All these options definitely give the ability to program proper scheduler
+according to internal data for users.
+
+
+- User level threads:
+
+In ex2 we have implemented user level threads with round robin scheduler.
+Of course we could implement these threads with variety schedulers - just
+implement algorithm of the desire scheduler in which all threads will follow.
+
+- multi processes:
+
+Galit created processes instead of threads. The OS is aware of these processes
+and the only one that schedules them. Therefore the user (Galit) hasn't the
+ablitiy to create his own scheduler.
+
+
+--------------------------------------------------------------------------------
+c. Communication time (between different threads/processes)
+--------------------------------------------------------------------------------
+
+- single process:
+
+There is only one process so it is irrelevant for this implementation.
+
+posix's library:
+
+Posix's library provides mutexes, conditional variables and other functions
+like pthread_join or pthread_create which permits different threads to
+communicate effectively and quickly. In addition, the use of threads permits
+faster context switch between two threads than context switch between processes.
+
+
+- User level threads:
+
+As we mentioned above, the context switch between threads is relatively fast.
+This is because the OS isn't aware of the threads - only the process the
+contains them, which means there is no trap in each context switch.
+In addition, The user level threads of the same process share memory heap, files
+and code which reduce the communication time among them.
+
+- multi processes:
+
+The processes are usually independent on each other. They usually responsible
+for different tasks and are not sharing code or memory. Therefore,
+the communication between two processes is expected to be slow.
+
+
+--------------------------------------------------------------------------------
+d. Ability to progress while a certain thread/process is blocked
+--------------------------------------------------------------------------------
+
+- single process:
+
+single process meaning in each time the process is blocked, the whole program is
+blocked. So there is no progress in that case.
+
+- posix's library:
+
+The posix's permits the user creating multi threads and even determine the
+scheduling algorithm. All these options give the ability to make context switch
+to other thread while the current running thread becomes blocked.
+
+- User level threads:
+
+In a similar way, the user can implement its own scheduling algorithm
+(as we mentioned before) such that in case of blocking the running thread, a
+scheduling decision would be performed immediately. Thus, the program will
+progress despite the waiting of the blocked thread.
+
+
+- multi processes:
+
+The scheduling that OS implementing for processes (as we argued before) permits
+context switches between processes and therefore a blocked process will be
+preempted by OS in favor of other ready process.
+
+--------------------------------------------------------------------------------
+e. Overall speed
+--------------------------------------------------------------------------------
+
+- single process:
+
+Single process has only one flow. If there is long waiting for I/O for example,
+the whole program will wait, meaning the program speed depends on the waiting
+time of the process. In addition, there is no ability to utilize multi core
+hardware which makes the single process to be slow.
+
+- posix's library:
+
+The program can be divided into several tasks such that each thread or group of
+threads performs different task, (as we implemented in this exercise). Thus,
+performing I/O operations will not block the whole program. Instead, the blocked
+thread will preempt in favor of a ready one. As we mentioned, the posix library
+support multi core programing which means there are several pthreads in several
+cores at a given time. Considering also the relatively quick context switch the
+entire task will probably be done very quickly.
+
+- User level threads:
+
+Implementing proper scheduler according to the internal data, performing context
+switches between threads without OS involvement, cooperating between threads,
+the ability to progress while a certain thread is blocked - all of these
+properties increase the speed of user level threads program.
+Therefore, the performance would be fast.
+
+
+- multi processes:
+
+Each context switch between processes requires a trap which creates high
+overhead. Considering also the slow communication between processes and lack of
+support in multi core utilization, the multi processes program are expected to
+be slow.
+
+================================================================================
+
+Q4
+
+================================================================================
+
+a. Kernel level threads:
+
+parent and his child share: heap and global variables.
+
+b. user level threads:
+
+parent and his child share: heap and global variables.
+
+c. Processes:
+
+parent and his child share: nothing. the child is a copy of his parent.
+
+
+
+================================================================================
+
+Q5
+
+================================================================================
+
+Deadlock is the situation in which each thread waits to other one
+(e.g each thread waits to a mutex that other thread holds) and therefore there
+is a circle dependency causing the program to stuck. Live-lock is similar to
+deadlock expect that the threads involved in live-lock constantly switch between
+themselves none progress. For example, two threads try getting a shared key.
+Each one of them first checks if the other one interest in getting that key.
+If the answer is true, then the running thread sleeps and notifies the other
+one. At that situation the program will switch constantly between the two
+threads but with no progress.
